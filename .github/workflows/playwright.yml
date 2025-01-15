@@ -1,0 +1,108 @@
+variables:
+  NODE_VERSION: "22"
+  SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/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"  # Replace with your actual Slack Webhook URL 
+  CONTENT_TYPE: "Content-Type: application/json"
+  RESULTS_DIR: "playwright-results"  # Directory to save test results
+
+before_script:
+  - apt-get update && apt-get install -y wget ca-certificates curl jq
+  - curl -sL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
+  - apt-get install -y nodejs
+  - npm install -g npm@latest
+  - npm install -g playwright
+  - npx playwright --version  # Log the Playwright version
+  - mkdir -p $RESULTS_DIR  # Create the directory to store test results (if not already exists)
+  - ls -la $RESULTS_DIR  # List the contents of the directory before running tests for debugging
+
+test:
+  stage: test
+  image: node:22  # Docker image with Node.js
+  script:
+    - npm ci
+    - npx playwright install --with-deps
+    - npx playwright test --reporter=json --output=$RESULTS_DIR  # Store test results in the created directory
+    - ls -R $RESULTS_DIR  # Debugging: List the files to verify the presence of individual test result files
+    - |
+      # Check for any .json files inside the subdirectories and create a consolidated results.json
+      RESULT_JSON_FILES=$(find $RESULTS_DIR -type f -name "*.json")
+      if [ -z "$RESULT_JSON_FILES" ]; then
+        echo "Error: No result JSON files found"
+        exit 1
+      fi
+
+      # Debugging: Print the contents of each result file
+      for file in $RESULT_JSON_FILES; do
+        echo "File Contents of $file:"
+        cat $file
+        echo "--------------------"
+      done
+
+      # Create a consolidated results.json from all the individual result files
+      echo "[" > $RESULTS_DIR/results.json
+      for file in $RESULT_JSON_FILES; do
+        cat $file >> $RESULTS_DIR/results.json
+        echo "," >> $RESULTS_DIR/results.json
+      done
+      # Remove the last comma and close the array
+      sed -i '$ s/,$//' $RESULTS_DIR/results.json
+      echo "]" >> $RESULTS_DIR/results.json
+
+    - cat $RESULTS_DIR/results.json  # Print out the contents of the consolidated results.json for debugging purposes
+
+  artifacts:
+    paths:
+      - $RESULTS_DIR/*  # Ensure that the entire folder is saved as an artifact
+    expire_in: 30 days
+
+  after_script:
+    - |
+      # Check if results.json exists
+      if [ ! -f "$RESULTS_DIR/results.json" ]; then
+        echo "Error: results.json file not found in $RESULTS_DIR"
+        ls -la $RESULTS_DIR  # List files in the results directory for debugging
+        exit 1  # Exit the script if results.json is missing
+      fi
+    - |
+      # Extract total tests by counting the length of the JSON array
+      TOTAL=$(jq 'length' $RESULTS_DIR/results.json)
+      # Extract passed, failed, broken, and skipped tests by counting specific statuses
+      PASSED=$(jq '[.[] | select(.status == "passed")] | length' $RESULTS_DIR/results.json)
+      FAILED=$(jq '[.[] | select(.status == "failed")] | length' $RESULTS_DIR/results.json)
+      BROKEN=$(jq '[.[] | select(.status == "broken")] | length' $RESULTS_DIR/results.json)
+      SKIP=$(jq '[.[] | select(.status == "skipped")] | length' $RESULTS_DIR/results.json)
+      # Extract total test duration (in milliseconds) and convert to minutes and seconds
+      DURATION_MS=$(jq '[.[] | select(.duration)] | map(.duration) | add' $RESULTS_DIR/results.json)
+      MINS=$((DURATION_MS / 60000))
+      SECS=$(( (DURATION_MS % 60000) / 1000 ))
+
+    - |
+      # Log the directory and results for debugging
+      echo "Test results stored in directory: $RESULTS_DIR"
+      echo "Results file path: $RESULTS_DIR/results.json"
+    - |
+      # Prepare Slack message payload
+      RUN_TYPE=${RUN_TYPE:-"PlayWright"}  # Default value if RUN_TYPE is not set
+      DATA="{
+        \"text\":\"$RUN_TYPE Project Automation test report is generated at 
+        https://gitlab.com/sune6/wire-cypress/-/artifacts \n
+        *Total: $TOTAL* \n
+        *Passed: $PASSED* \n
+        *Failed: $FAILED* \n
+        *Broken: $BROKEN* \n
+        *Skipped: $SKIP* \n
+        *Duration: $MINS minutes and $SECS seconds*\",
+        \"channel\":\"qa-automation-results\", 
+        \"username\":\"GitLab-CI\"
+      }"
+    - |
+      # Log the Slack payload for debugging
+      echo "Slack Payload: $DATA"
+    - |
+      # Send the test result status to Slack using the webhook
+      RESPONSE=$(curl -X POST $SLACK_WEBHOOK_URL -H "$CONTENT_TYPE" --data "$DATA")
+    - |
+      # Log the response from Slack for debugging
+      echo "Slack Response: $RESPONSE"
+
+  only:
+    - Wire/coderefactor  # Specifies that this job will run only on this branch

@@ -1,0 +1,22 @@
+[
+{
+    "username" : "testusername",
+    "password" : "testpassword",
+    "clientSite"   : "Centerra"
+},
+{
+    "username" : "testusername",
+    "password" : "testpassword",
+    "clientSite"   : "Gold Vale"
+},
+{
+    "username" : "testusername",
+    "password" : "testpassword",
+    "clientSite"   :"Kamoa"
+},
+{
+    "username" : "testusername",
+    "password" : "testpassword",
+    "clientSite"   :"Sibanye"
+}
+]
