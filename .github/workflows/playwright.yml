@@ -1,0 +1,121 @@
+name: Playwright Test Automation
+
+on:
+  push:
+    branches:
+      - master  # Specifies that this workflow will run only on this branch
+      - main
+  pull_request:
+    branches:
+      - master  # Specify if you want to run on PRs to the same branch
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_VERSION: "22"
+      SLACK_WEBHOOK_URL: "webhook"  # Replace with your actual Slack Webhook URL  
+      CONTENT_TYPE: "Content-Type: application/json"
+      RESULTS_DIR: "playwright-results"  # Directory to save test results
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          npm install -g npm@latest
+          npm install -g playwright
+
+      - name: Log Playwright version
+        run: npx playwright --version
+
+      - name: Prepare test results directory
+        run: |
+          mkdir -p ${{ env.RESULTS_DIR }}
+          ls -la ${{ env.RESULTS_DIR }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright dependencies
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright tests
+        run: |
+          npx playwright test --reporter=json --output=${{ env.RESULTS_DIR }}
+          ls -R ${{ env.RESULTS_DIR }}
+
+      - name: Consolidate result JSON files
+        run: |
+          RESULT_JSON_FILES=$(find ${{ env.RESULTS_DIR }} -type f -name "*.json")
+          if [ -z "$RESULT_JSON_FILES" ]; then
+            echo "Error: No result JSON files found"
+            exit 1
+          fi
+
+          for file in $RESULT_JSON_FILES; do
+            echo "File Contents of $file:"
+            cat $file
+            echo "--------------------"
+          done
+
+          echo "[" > ${{ env.RESULTS_DIR }}/results.json
+          for file in $RESULT_JSON_FILES; do
+            cat $file >> ${{ env.RESULTS_DIR }}/results.json
+            echo "," >> ${{ env.RESULTS_DIR }}/results.json
+          done
+          sed -i '$ s/,$//' ${{ env.RESULTS_DIR }}/results.json
+          echo "]" >> ${{ env.RESULTS_DIR }}/results.json
+
+      - name: Print consolidated results
+        run: cat ${{ env.RESULTS_DIR }}/results.json
+
+      - name: Upload test results as artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: playwright-results
+          path: ${{ env.RESULTS_DIR }}/*
+
+      - name: Check results and prepare Slack message
+        run: |
+          if [ ! -f "${{ env.RESULTS_DIR }}/results.json" ]; then
+            echo "Error: results.json file not found in ${{ env.RESULTS_DIR }}"
+            ls -la ${{ env.RESULTS_DIR }}
+            exit 1
+          fi
+
+          TOTAL=$(jq 'length' ${{ env.RESULTS_DIR }}/results.json)
+          PASSED=$(jq '[.[] | select(.status == "passed")] | length' ${{ env.RESULTS_DIR }}/results.json)
+          FAILED=$(jq '[.[] | select(.status == "failed")] | length' ${{ env.RESULTS_DIR }}/results.json)
+          BROKEN=$(jq '[.[] | select(.status == "broken")] | length' ${{ env.RESULTS_DIR }}/results.json)
+          SKIP=$(jq '[.[] | select(.status == "skipped")] | length' ${{ env.RESULTS_DIR }}/results.json)
+          DURATION_MS=$(jq '[.[] | select(.duration)] | map(.duration) | add' ${{ env.RESULTS_DIR }}/results.json)
+          MINS=$((DURATION_MS / 60000))
+          SECS=$(( (DURATION_MS % 60000) / 1000 ))
+
+          RUN_TYPE=${RUN_TYPE:-"PlayWright"}
+          DATA="{
+            \"text\":\"$RUN_TYPE Project Automation test report is generated at 
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }} \n
+            *Total: $TOTAL* \n
+            *Passed: $PASSED* \n
+            *Failed: $FAILED* \n
+            *Broken: $BROKEN* \n
+            *Skipped: $SKIP* \n
+            *Duration: $MINS minutes and $SECS seconds*\",
+            \"channel\":\"qa-automation-results\", 
+            \"username\":\"GitHub Actions\"
+          }"
+
+      - name: Send test result status to Slack
+        run: |
+          RESPONSE=$(curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} -H "${{ env.CONTENT_TYPE }}" --data "$DATA")
+          echo "Slack Response: $RESPONSE"
